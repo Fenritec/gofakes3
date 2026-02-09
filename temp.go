@@ -14,7 +14,6 @@ type UploadPart interface {
 	Reader(context.Context) io.ReadCloser
 	Writer(context.Context) io.WriteCloser
 	Cleanup(context.Context)
-	ValidateMD5(context.Context, []byte) error
 }
 
 func NewMultipartBackendInMemory() MultipartBackend {
@@ -46,20 +45,6 @@ func (m *memoryTempBlob) Reader(context.Context) io.ReadCloser {
 
 // Writer implements TempBlob.
 func (m *memoryTempBlob) Writer(context.Context) io.WriteCloser { return &nopWriteCloser{m.buf} }
-
-// ValidateMD5 implements MD5 validation for the uploaded part.
-func (m *memoryTempBlob) ValidateMD5(ctx context.Context, actualMD5 []byte) error {
-	if m.expectedMD5 == nil {
-		// No MD5 validation requested
-		return nil
-	}
-
-	if !bytes.Equal(actualMD5, m.expectedMD5) {
-		return ErrBadDigest
-	}
-
-	return nil
-}
 
 type nopWriteCloser struct {
 	io.Writer

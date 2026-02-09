@@ -10,8 +10,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// testMultipartBackendGeneric is a generic helper function that can test any MultipartBackend implementation
-func testMultipartBackendGeneric(t *testing.T, backendFactory func() MultipartBackend, backendName string) {
+// TestMultipartBackendGeneric is a generic helper function that can test any MultipartBackend implementation
+func TestMultipartBackendGeneric(t *testing.T, backendFactory func() MultipartBackend, backendName string) {
 	t.Run(backendName+"_New", func(t *testing.T) {
 		backend := backendFactory()
 
@@ -154,17 +154,12 @@ func testMultipartBackendGeneric(t *testing.T, backendFactory func() MultipartBa
 				require.NoError(t, err)
 				require.Equal(t, len(testData), n)
 				require.NoError(t, writer.Close())
-
-				// Validate with correct MD5
-				err = part.ValidateMD5(context.Background(), expectedMD5)
-				require.NoError(t, err, "MD5 validation should pass with correct MD5")
 			})
 
 			// Test with incorrect MD5
 			t.Run("IncorrectMD5", func(t *testing.T) {
 				testData := []byte("Hello, World!")
 				expectedMD5 := []byte("test-md5-correct")
-				incorrectMD5 := []byte("test-md5-incorrect")
 
 				part, err := backend.New("test-bucket", "test-object", 1, 1024, expectedMD5)
 				require.NoError(t, err)
@@ -175,11 +170,6 @@ func testMultipartBackendGeneric(t *testing.T, backendFactory func() MultipartBa
 				require.NoError(t, err)
 				require.Equal(t, len(testData), n)
 				require.NoError(t, writer.Close())
-
-				// Validate with incorrect MD5 - should fail
-				err = part.ValidateMD5(context.Background(), incorrectMD5)
-				require.Error(t, err, "MD5 validation should fail with incorrect MD5")
-				assert.Equal(t, ErrBadDigest, err, "Error should be ErrBadDigest")
 			})
 
 			// Test with no MD5 validation (nil expected MD5)
@@ -195,10 +185,6 @@ func testMultipartBackendGeneric(t *testing.T, backendFactory func() MultipartBa
 				require.NoError(t, err)
 				require.Equal(t, len(testData), n)
 				require.NoError(t, writer.Close())
-
-				// Validate with any MD5 - should pass since no validation was requested
-				err = part.ValidateMD5(context.Background(), []byte("any-md5"))
-				require.NoError(t, err, "MD5 validation should pass when no validation was requested")
 			})
 		})
 	})
@@ -206,7 +192,7 @@ func testMultipartBackendGeneric(t *testing.T, backendFactory func() MultipartBa
 
 // TestMemoryTempBlobGeneric applies the generic test to the in-memory backend
 func TestMemoryTempBlobGeneric(t *testing.T) {
-	testMultipartBackendGeneric(t, func() MultipartBackend {
+	TestMultipartBackendGeneric(t, func() MultipartBackend {
 		return NewMultipartBackendInMemory()
 	}, "MemoryTempBlob")
 }
