@@ -1,6 +1,6 @@
 module github.com/rclone/gofakes3
 
-go 1.18
+go 1.24.0
 
 require (
 	github.com/aws/aws-sdk-go-v2 v1.30.3
