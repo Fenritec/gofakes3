@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"maps"
 	"math/big"
 	"net/url"
 	"strings"
@@ -64,7 +65,7 @@ in a 100,000 element array of 80-ish byte strings takes barely 1ms.
 */
 type bucketUploads struct {
 	// uploads should be protected by the coarse lock in uploader:
-	uploads map[UploadID]*multipartUpload
+	uploads map[UploadID]*multipartUploadInMemory
 
 	// objectIndex provides sorted traversal of the bucket uploads.
 	//
@@ -77,20 +78,20 @@ type bucketUploads struct {
 
 func newBucketUploads() *bucketUploads {
 	return &bucketUploads{
-		uploads:     map[UploadID]*multipartUpload{},
+		uploads:     map[UploadID]*multipartUploadInMemory{},
 		objectIndex: skiplist.NewStringMap(),
 	}
 }
 
 // add assumes uploader.mu is acquired
-func (bu *bucketUploads) add(mpu *multipartUpload) {
+func (bu *bucketUploads) add(mpu *multipartUploadInMemory) {
 	bu.uploads[mpu.ID] = mpu
 
 	uploads, ok := bu.objectIndex.Get(mpu.Object)
 	if !ok {
-		uploads = []*multipartUpload{mpu}
+		uploads = []*multipartUploadInMemory{mpu}
 	} else {
-		uploads = append(uploads.([]*multipartUpload), mpu)
+		uploads = append(uploads.([]*multipartUploadInMemory), mpu)
 	}
 	bu.objectIndex.Set(mpu.Object, uploads)
 }
@@ -100,17 +101,17 @@ func (bu *bucketUploads) remove(uploadID UploadID) {
 	upload := bu.uploads[uploadID]
 	delete(bu.uploads, uploadID)
 
-	var uploads []*multipartUpload
+	var uploads []*multipartUploadInMemory
 	{
 		upv, ok := bu.objectIndex.Get(upload.Object)
 		if !ok || upv == nil {
 			return
 		}
-		uploads = upv.([]*multipartUpload)
+		uploads = upv.([]*multipartUploadInMemory)
 	}
 
 	var found = -1
-	var v *multipartUpload
+	var v *multipartUploadInMemory
 	for found, v = range uploads {
 		if v.ID == uploadID {
 			break
@@ -148,7 +149,16 @@ func (bu *bucketUploads) remove(uploadID UploadID) {
 // good convenience for Backend implementers if their use case did not require
 // persistent multipart upload handling, or it could be satisfied by this
 // naive implementation.
-type uploader struct {
+// Uploader interface defines the contract for multipart upload management
+type Uploader interface {
+	Begin(bucket, object string, meta map[string]string, initiated time.Time) MultipartUpload
+	ListParts(bucket, object string, uploadID UploadID, marker int, limit int64) (*ListMultipartUploadPartsResult, error)
+	List(bucket string, marker *UploadListMarker, prefix Prefix, limit int64) (*ListMultipartUploadsResult, error)
+	Complete(bucket, object string, id UploadID) (MultipartUpload, error)
+	Get(bucket, object string, id UploadID) (MultipartUpload, error)
+}
+
+type uploaderInMemory struct {
 	// uploadIDs use a big.Int to allow unbounded IDs (not that you'd be
 	// expected to ever generate 4.2 billion of these but who are we to judge?)
 	uploadID *big.Int
@@ -159,21 +169,21 @@ type uploader struct {
 	tempBlobFactory MultipartBackend
 }
 
-func newUploader(tempBlobFactory MultipartBackend) *uploader {
-	return &uploader{
+func NewUploaderInMemory(backend MultipartBackend) Uploader {
+	return &uploaderInMemory{
 		buckets:         make(map[string]*bucketUploads),
 		uploadID:        new(big.Int),
-		tempBlobFactory: tempBlobFactory,
+		tempBlobFactory: backend,
 	}
 }
 
-func (u *uploader) Begin(bucket, object string, meta map[string]string, initiated time.Time) *multipartUpload {
+func (u *uploaderInMemory) Begin(bucket, object string, meta map[string]string, initiated time.Time) MultipartUpload {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 
 	u.uploadID.Add(u.uploadID, add1)
 
-	mpu := &multipartUpload{
+	mpu := &multipartUploadInMemory{
 		ID:              UploadID(u.uploadID.String()),
 		Bucket:          bucket,
 		Object:          object,
@@ -194,7 +204,7 @@ func (u *uploader) Begin(bucket, object string, meta map[string]string, initiate
 	return mpu
 }
 
-func (u *uploader) ListParts(bucket, object string, uploadID UploadID, marker int, limit int64) (*ListMultipartUploadPartsResult, error) {
+func (u *uploaderInMemory) ListParts(bucket, object string, uploadID UploadID, marker int, limit int64) (*ListMultipartUploadPartsResult, error) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 
@@ -237,7 +247,7 @@ func (u *uploader) ListParts(bucket, object string, uploadID UploadID, marker in
 	return &result, nil
 }
 
-func (u *uploader) List(bucket string, marker *UploadListMarker, prefix Prefix, limit int64) (*ListMultipartUploadsResult, error) {
+func (u *uploaderInMemory) List(bucket string, marker *UploadListMarker, prefix Prefix, limit int64) (*ListMultipartUploadsResult, error) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 
@@ -280,7 +290,7 @@ func (u *uploader) List(bucket string, marker *UploadListMarker, prefix Prefix, 
 
 	for iter.Next() {
 		object := iter.Key().(string)
-		uploads := iter.Value().([]*multipartUpload)
+		uploads := iter.Value().([]*multipartUploadInMemory)
 
 	retry:
 		matched := prefix.Match(object, &match)
@@ -338,7 +348,7 @@ done:
 
 				// This is not especially defensive; it assumes the rest of the code works
 				// as it should. Could be something to clean up later:
-				result.NextUploadIDMarker = iter.Value().([]*multipartUpload)[0].ID
+				result.NextUploadIDMarker = iter.Value().([]*multipartUploadInMemory)[0].ID
 				result.NextKeyMarker = object
 				break
 			}
@@ -350,7 +360,7 @@ done:
 	return &result, nil
 }
 
-func (u *uploader) Complete(bucket, object string, id UploadID) (*multipartUpload, error) {
+func (u *uploaderInMemory) Complete(bucket, object string, id UploadID) (MultipartUpload, error) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	up, err := u.getUnlocked(bucket, object, id)
@@ -364,13 +374,13 @@ func (u *uploader) Complete(bucket, object string, id UploadID) (*multipartUploa
 	return up, nil
 }
 
-func (u *uploader) Get(bucket, object string, id UploadID) (mu *multipartUpload, err error) {
+func (u *uploaderInMemory) Get(bucket, object string, id UploadID) (mu MultipartUpload, err error) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	return u.getUnlocked(bucket, object, id)
 }
 
-func (u *uploader) getUnlocked(bucket, object string, id UploadID) (mu *multipartUpload, err error) {
+func (u *uploaderInMemory) getUnlocked(bucket, object string, id UploadID) (mu *multipartUploadInMemory, err error) {
 	bucketUps, ok := u.buckets[bucket]
 	if !ok {
 		return nil, ErrNoSuchUpload
@@ -422,7 +432,7 @@ func uploadListMarkerFromQuery(q url.Values) *UploadListMarker {
 	return &UploadListMarker{Object: object, UploadID: UploadID(q.Get("upload-id-marker"))}
 }
 
-type multipartUploadPart struct {
+type MultipartUploadPart struct {
 	PartNumber   int
 	ETag         string
 	TempBlob     UploadPart
@@ -430,7 +440,15 @@ type multipartUploadPart struct {
 	LastModified ContentTime
 }
 
-type multipartUpload struct {
+type MultipartUpload interface {
+	GetId() UploadID
+	GetMeta() map[string]string
+
+	AddPart(ctx context.Context, partNumber int, at time.Time, body HashingReader, size int64) (etag string, err error)
+	Reassemble(ctx context.Context, input *CompleteMultipartUploadRequest) (body HashingReader, size int64, err error)
+}
+
+type multipartUploadInMemory struct {
 	ID        UploadID
 	Bucket    string
 	Object    string
@@ -449,13 +467,23 @@ type multipartUpload struct {
 	// always be nil.
 	//
 	// Do not attempt to access parts without locking mu.
-	parts           []*multipartUploadPart
+	parts           []*MultipartUploadPart
 	tempBlobFactory MultipartBackend
 
 	mu sync.Mutex
 }
 
-func (mpu *multipartUpload) AddPart(ctx context.Context, partNumber int, at time.Time, body *hashingReader, size int64) (etag string, err error) {
+// GetId implements [MultipartUpload].
+func (mpu *multipartUploadInMemory) GetId() UploadID {
+	return mpu.ID
+}
+
+// GetMeta implements [MultipartUpload].
+func (mpu *multipartUploadInMemory) GetMeta() map[string]string {
+	return maps.Clone(mpu.Meta)
+}
+
+func (mpu *multipartUploadInMemory) AddPart(ctx context.Context, partNumber int, at time.Time, body HashingReader, size int64) (etag string, err error) {
 	if partNumber > MaxUploadPartNumber {
 		return "", ErrInvalidPart
 	}
@@ -481,7 +509,7 @@ func (mpu *multipartUpload) AddPart(ctx context.Context, partNumber int, at time
 	mpu.mu.Lock()
 	defer mpu.mu.Unlock()
 
-	part := multipartUploadPart{
+	part := MultipartUploadPart{
 		PartNumber:   partNumber,
 		TempBlob:     tempBlob,
 		ETag:         etag,
@@ -489,13 +517,13 @@ func (mpu *multipartUpload) AddPart(ctx context.Context, partNumber int, at time
 		LastModified: NewContentTime(at),
 	}
 	if partNumber >= len(mpu.parts) {
-		mpu.parts = append(mpu.parts, make([]*multipartUploadPart, partNumber-len(mpu.parts)+1)...)
+		mpu.parts = append(mpu.parts, make([]*MultipartUploadPart, partNumber-len(mpu.parts)+1)...)
 	}
 	mpu.parts[partNumber] = &part
 	return etag, nil
 }
 
-func (mpu *multipartUpload) Reassemble(ctx context.Context, input *CompleteMultipartUploadRequest) (body *hashingReader, size int64, err error) {
+func (mpu *multipartUploadInMemory) Reassemble(ctx context.Context, input *CompleteMultipartUploadRequest) (body HashingReader, size int64, err error) {
 	mpu.mu.Lock()
 	defer mpu.mu.Unlock()
 
@@ -535,7 +563,7 @@ func (mpu *multipartUpload) Reassemble(ctx context.Context, input *CompleteMulti
 		readers[i] = reader
 	}
 
-	body, err = newHashingReader(io.MultiReader(readers...), "")
+	body, err = NewHashingReader(io.MultiReader(readers...), "")
 	if err != nil {
 		return nil, 0, err
 	}

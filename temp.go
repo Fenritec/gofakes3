@@ -17,7 +17,7 @@ type UploadPart interface {
 	ValidateMD5(context.Context, []byte) error
 }
 
-func newMultipartBackendInMemory() MultipartBackend {
+func NewMultipartBackendInMemory() MultipartBackend {
 	return &multipartBackendInMemory{}
 }
 
@@ -32,7 +32,7 @@ func (m *multipartBackendInMemory) New(bucket, object string, partNumber int, si
 }
 
 type memoryTempBlob struct {
-	buf      *bytes.Buffer
+	buf         *bytes.Buffer
 	expectedMD5 []byte
 }
 
@@ -53,11 +53,11 @@ func (m *memoryTempBlob) ValidateMD5(ctx context.Context, actualMD5 []byte) erro
 		// No MD5 validation requested
 		return nil
 	}
-	
+
 	if !bytes.Equal(actualMD5, m.expectedMD5) {
 		return ErrBadDigest
 	}
-	
+
 	return nil
 }
 

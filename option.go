@@ -8,10 +8,10 @@ func WithV4Auth(authPair map[string]string) Option {
 	return func(g *GoFakeS3) { g.v4AuthPair = authPair }
 }
 
-// WithTempBlobFactory allors you to not use the standard in memory backend
+// WithMultipartBackend allows you to not use the standard in memory backend
 // for multipart upload
-func WithTempBlobFactory(factory MultipartBackend) Option {
-	return func(g *GoFakeS3) { g.uploader = newUploader(factory) }
+func WithUploader(uploader Uploader) Option {
+	return func(g *GoFakeS3) { g.uploader = uploader }
 }
 
 // WithTimeSource allows you to substitute the behaviour of time.Now() and
