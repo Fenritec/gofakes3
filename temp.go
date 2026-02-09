@@ -6,31 +6,34 @@ import (
 	"io"
 )
 
-type TempBlobFactory interface {
-	New(bucket, object string, partNumber int, size int64, expectedMD5 []byte) (TempBlob, error)
+type MultipartBackend interface {
+	New(bucket, object string, partNumber int, size int64, expectedMD5 []byte) (UploadPart, error)
 }
 
-type TempBlob interface {
+type UploadPart interface {
 	Reader(context.Context) io.ReadCloser
 	Writer(context.Context) io.WriteCloser
 	Cleanup(context.Context)
+	ValidateMD5(context.Context, []byte) error
 }
 
-func newMemoryTempBlobFactory() TempBlobFactory {
-	return &memoryTempBlobFactory{}
+func newMultipartBackendInMemory() MultipartBackend {
+	return &multipartBackendInMemory{}
 }
 
-type memoryTempBlobFactory struct{}
+type multipartBackendInMemory struct{}
 
 // New implements TempBlobFactory.
-func (m *memoryTempBlobFactory) New(bucket, object string, partNumber int, size int64, epectedMD5 []byte) (TempBlob, error) {
+func (m *multipartBackendInMemory) New(bucket, object string, partNumber int, size int64, expectedMD5 []byte) (UploadPart, error) {
 	return &memoryTempBlob{
-		buf: bytes.NewBuffer(make([]byte, 0, size)),
+		buf:         bytes.NewBuffer(make([]byte, 0, size)),
+		expectedMD5: expectedMD5,
 	}, nil
 }
 
 type memoryTempBlob struct {
-	buf *bytes.Buffer
+	buf      *bytes.Buffer
+	expectedMD5 []byte
 }
 
 // Cleanup implements TempBlob.
@@ -43,6 +46,20 @@ func (m *memoryTempBlob) Reader(context.Context) io.ReadCloser {
 
 // Writer implements TempBlob.
 func (m *memoryTempBlob) Writer(context.Context) io.WriteCloser { return &nopWriteCloser{m.buf} }
+
+// ValidateMD5 implements MD5 validation for the uploaded part.
+func (m *memoryTempBlob) ValidateMD5(ctx context.Context, actualMD5 []byte) error {
+	if m.expectedMD5 == nil {
+		// No MD5 validation requested
+		return nil
+	}
+	
+	if !bytes.Equal(actualMD5, m.expectedMD5) {
+		return ErrBadDigest
+	}
+	
+	return nil
+}
 
 type nopWriteCloser struct {
 	io.Writer

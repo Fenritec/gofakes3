@@ -10,7 +10,7 @@ func WithV4Auth(authPair map[string]string) Option {
 
 // WithTempBlobFactory allors you to not use the standard in memory backend
 // for multipart upload
-func WithTempBlobFactory(factory TempBlobFactory) Option {
+func WithTempBlobFactory(factory MultipartBackend) Option {
 	return func(g *GoFakeS3) { g.uploader = newUploader(factory) }
 }
 

@@ -156,10 +156,10 @@ type uploader struct {
 	buckets map[string]*bucketUploads
 	mu      sync.Mutex
 
-	tempBlobFactory TempBlobFactory
+	tempBlobFactory MultipartBackend
 }
 
-func newUploader(tempBlobFactory TempBlobFactory) *uploader {
+func newUploader(tempBlobFactory MultipartBackend) *uploader {
 	return &uploader{
 		buckets:         make(map[string]*bucketUploads),
 		uploadID:        new(big.Int),
@@ -425,7 +425,7 @@ func uploadListMarkerFromQuery(q url.Values) *UploadListMarker {
 type multipartUploadPart struct {
 	PartNumber   int
 	ETag         string
-	TempBlob     TempBlob
+	TempBlob     UploadPart
 	Size         int64
 	LastModified ContentTime
 }
@@ -450,7 +450,7 @@ type multipartUpload struct {
 	//
 	// Do not attempt to access parts without locking mu.
 	parts           []*multipartUploadPart
-	tempBlobFactory TempBlobFactory
+	tempBlobFactory MultipartBackend
 
 	mu sync.Mutex
 }

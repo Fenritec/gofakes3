@@ -53,7 +53,7 @@ func New(backend Backend, options ...Option) *GoFakeS3 {
 		timeSkew:          DefaultSkewLimit,
 		metadataSizeLimit: DefaultMetadataSizeLimit,
 		integrityCheck:    true,
-		uploader:          newUploader(newMemoryTempBlobFactory()),
+		uploader:          newUploader(newMultipartBackendInMemory()),
 		requestID:         0,
 	}
 
